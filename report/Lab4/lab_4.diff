@@ -1,0 +1,825 @@
+diff --git a/arch/um/defconfig b/arch/um/defconfig
+index 08107a7..24b6dfd 100644
+--- a/arch/um/defconfig
++++ b/arch/um/defconfig
+@@ -161,7 +161,7 @@ CONFIG_CGROUP_MEMCG_SWAP=y
+ # CONFIG_CGROUP_MEMCG_KMEM is not set
+ CONFIG_CGROUP_SCHED=y
+ CONFIG_FAIR_GROUP_SCHED=y
+-# CONFIG_CFS_BANDWIDTH is not set
++CONFIG_CFS_BANDWIDTH=y
+ # CONFIG_RT_GROUP_SCHED is not set
+ CONFIG_BLK_CGROUP=y
+ # CONFIG_DEBUG_BLK_CGROUP is not set
+diff --git a/arch/x86/syscalls/syscall_64.tbl b/arch/x86/syscalls/syscall_64.tbl
+index a3c38bb..2101b72 100644
+--- a/arch/x86/syscalls/syscall_64.tbl
++++ b/arch/x86/syscalls/syscall_64.tbl
+@@ -324,6 +324,17 @@
+ # 315	common	sched_getattr		sys_sched_getattr
+ # 316	common	renameat2		sys_renameat2
+ 317	common	seccomp			sys_seccomp
++318	common  setcolors		sys_setcolors
++319	common  getcolors		sys_getcolors
++320 common  getnicebypid    sys_getnicebypid
++321 common  setnicebycolor  sys_setnicebycolor
++322 common  getquota		sys_getquota
++323 common  setquota  		sys_setquota
++324 common  getusge 		sys_getusage
++325 common 	ssmem_attach	sys_ssmem_attach
++326 common 	ssmem_detach	sys_ssmem_detach
++327 common 	ssmem_read		sys_ssmem_read
++328 common 	ssmem_write		sys_ssmem_write
+ 
+ #
+ # x32-specific system call numbers start at 512 to avoid cache impact
+diff --git a/drivers/android/binder.c b/drivers/android/binder.c
+index 383aa21..53fe808 100644
+--- a/drivers/android/binder.c
++++ b/drivers/android/binder.c
+@@ -1380,6 +1380,12 @@ static void binder_transaction(struct binder_proc *proc,
+ 			goto err_dead_binder;
+ 		}
+ 		target_proc = target_thread->proc;
++        if(proc->tsk->color != target_proc->tsk->color){
++            if(proc->tsk->color != 0 && target_proc->tsk->color != 0){
++                return_error = BR_FAILED_REPLY;
++                goto err_diff_color;
++            }
++        }
+ 	} else {
+ 		if (tr->target.handle) {
+ 			struct binder_ref *ref;
+@@ -1737,6 +1743,7 @@ err_empty_call_stack:
+ err_dead_binder:
+ err_invalid_target_handle:
+ err_no_context_mgr_node:
++err_diff_color:
+ 	binder_debug(BINDER_DEBUG_FAILED_TRANSACTION,
+ 		     "%d:%d transaction failed %d, size %lld-%lld\n",
+ 		     proc->pid, thread->pid, return_error,
+diff --git a/fs/Makefile b/fs/Makefile
+index 4fe6df3..cdebe1a 100644
+--- a/fs/Makefile
++++ b/fs/Makefile
+@@ -11,7 +11,7 @@ obj-y :=	open.o read_write.o file_table.o super.o \
+ 		attr.o bad_inode.o file.o filesystems.o namespace.o \
+ 		seq_file.o xattr.o libfs.o fs-writeback.o \
+ 		pnode.o splice.o sync.o utimes.o \
+-		stack.o fs_struct.o statfs.o
++		stack.o fs_struct.o statfs.o evictd.o
+ 
+ ifeq ($(CONFIG_BLOCK),y)
+ obj-y +=	buffer.o bio.o block_dev.o direct-io.o mpage.o ioprio.o
+diff --git a/fs/ext2/Makefile b/fs/ext2/Makefile
+index f42af45..f193469 100644
+--- a/fs/ext2/Makefile
++++ b/fs/ext2/Makefile
+@@ -5,7 +5,7 @@
+ obj-$(CONFIG_EXT2_FS) += ext2.o
+ 
+ ext2-y := balloc.o dir.o file.o ialloc.o inode.o \
+-	  ioctl.o namei.o super.o symlink.o
++	  ioctl.o namei.o super.o symlink.o ext2_evict.o
+ 
+ ext2-$(CONFIG_EXT2_FS_XATTR)	 += xattr.o xattr_user.o xattr_trusted.o
+ ext2-$(CONFIG_EXT2_FS_POSIX_ACL) += acl.o
+diff --git a/fs/ext2/ext2.h b/fs/ext2/ext2.h
+index d9a17d0..a2092f3 100644
+--- a/fs/ext2/ext2.h
++++ b/fs/ext2/ext2.h
+@@ -110,6 +110,13 @@ struct ext2_sb_info {
+ 	 * Note: It is used in ext2_show_options() to provide a consistent view
+ 	 * of the mount options.
+ 	 */
++
++	 /* Evcit mount options */
++	 uint32_t srv;
++	 unsigned long wh;
++	 unsigned long wl;
++	 unsigned long evict;
++
+ 	spinlock_t s_lock;
+ };
+ 
+diff --git a/fs/ext2/file.c b/fs/ext2/file.c
+index a5b3a5d..0ff71ae 100644
+--- a/fs/ext2/file.c
++++ b/fs/ext2/file.c
+@@ -21,8 +21,9 @@
+ #include <linux/time.h>
+ #include <linux/pagemap.h>
+ #include <linux/quotaops.h>
+-#include "ext2.h"
+-#include "xattr.h"
++#include "ext2_evict.h"
++//#include "ext2.h"
++//#include "xattr.h"
+ #include "acl.h"
+ 
+ /*
+@@ -56,6 +57,34 @@ int ext2_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+ 	return ret;
+ }
+ 
++/**
++ * When open a file
++ */
++int ext2_open(struct inode *i_node, struct file *file){
++	//if xattr evicted if 1 do ext2_fetch(i_node)
++	int buffer[0];
++	int buffer_size;
++	const char *name = "evicted";
++	int e_name_index = 0;
++	int ret;
++	int flags;
++
++	buffer_size = 1;
++	if(ext2_xattr_get(i_node, e_name_index, name, buffer, buffer_size) == -ENODATA){
++		buffer[0] = 0;
++		flags = XATTR_CREATE;
++		ext2_xattr_set(i_node, e_name_index, name, buffer, buffer_size, flags);
++	}else if(buffer[0] == 1){
++		if(!(ret = ext2_fetch(i_node))){
++			printk("fetch failed [#%d]\n", ret);
++			goto fetch_fail;
++		}
++	}
++	return dquot_file_open(i_node, file);
++fetch_fail:
++	return -ENODATA;
++}
++
+ /*
+  * We have mostly NULL's here: the current defaults are ok for
+  * the ext2 filesystem.
+@@ -71,7 +100,8 @@ const struct file_operations ext2_file_operations = {
+ 	.compat_ioctl	= ext2_compat_ioctl,
+ #endif
+ 	.mmap		= generic_file_mmap,
+-	.open		= dquot_file_open,
++	//.open		= dquot_file_open,
++	.open 		= ext2_open,
+ 	.release	= ext2_release_file,
+ 	.fsync		= ext2_fsync,
+ 	.splice_read	= generic_file_splice_read,
+diff --git a/fs/ext2/inode.c b/fs/ext2/inode.c
+index 0a87bb1..9140ed2 100644
+--- a/fs/ext2/inode.c
++++ b/fs/ext2/inode.c
+@@ -22,20 +22,21 @@
+  *  Assorted race fixes, rewrite of ext2_get_block() by Al Viro, 2000
+  */
+ 
+-#include <linux/time.h>
++//#include <linux/time.h>
+ #include <linux/highuid.h>
+-#include <linux/pagemap.h>
+-#include <linux/quotaops.h>
++//#include <linux/pagemap.h>
++//#include <linux/quotaops.h>
+ #include <linux/writeback.h>
+-#include <linux/buffer_head.h>
+-#include <linux/mpage.h>
++//#include <linux/buffer_head.h>
++//#include <linux/mpage.h>
+ #include <linux/fiemap.h>
+ #include <linux/namei.h>
+ #include <linux/aio.h>
+-#include "ext2.h"
++//#include "ext2.h"
+ #include "acl.h"
+ #include "xip.h"
+-#include "xattr.h"
++//#include "xattr.h"
++#include "ext2_evict.h"
+ 
+ static int __ext2_write_inode(struct inode *inode, int do_sync);
+ 
+@@ -482,6 +483,9 @@ static int ext2_alloc_branch(struct inode *inode,
+ 	ext2_fsblk_t new_blocks[4];
+ 	ext2_fsblk_t current_block;
+ 
++	if(get_ext2_usage(inode->i_sb) > ((struct ext2_sb_info *)(inode->i_sb->s_fs_info))->wh)
++		ext2_evict_fs(inode->i_sb);
++
+ 	num = ext2_alloc_blocks(inode, goal, indirect_blks,
+ 				*blks, new_blocks, &err);
+ 	if (err)
+@@ -1569,3 +1573,75 @@ int ext2_setattr(struct dentry *dentry, struct iattr *iattr)
+ 
+ 	return error;
+ }
++
++int clear_data_blocks(struct inode *i_node)
++{
++	/*
++	 * offsets index:
++	 * 0 - direct
++	 * 1 - indirect
++	 * 2 - double indirect
++	 * 3 - triple indirect
++	 */
++	int offsets[4], new_size, ret_val, n;
++	__le32 *i_data, temp_data;
++	unsigned blocksize;
++	long iblock;
++	struct ext2_inode_info *in_info = EXT2_I(i_node);
++
++	ret_val = 0;
++	i_data = EXT2_I(i_node)->i_data;
++	new_size = 0;
++	blocksize = i_node->i_sb->s_blocksize;
++	/* Will be zero */
++	iblock = (new_size + blocksize-1)
++					>> EXT2_BLOCK_SIZE_BITS(i_node->i_sb);
++	n = ext2_block_to_path(i_node, iblock, offsets, NULL);
++
++	/* I think that this should clear out the page cache. */
++	truncate_inode_pages(&i_node->i_data, 0);
++
++	mutex_lock(&in_info->truncate_mutex);
++	/* 
++	 * Clear out the direct 12 blocks. 
++	 * i_data + offsets[0] - should be 0
++	 * i_data + EXT2_NDIR_BLOCKS - end of direct blocks
++	 */
++	ext2_free_data(i_node, i_data + offsets[0], i_data + EXT2_NDIR_BLOCKS);
++
++	/* Clear out the indirect blocks. */
++	if (i_data[EXT2_IND_BLOCK] != 0) {
++		temp_data = i_data[EXT2_IND_BLOCK];
++		i_data[EXT2_IND_BLOCK] = 0;
++		if (temp_data != 0) {
++			ext2_free_branches(i_node, &temp_data, &temp_data + 1,
++					1);
++		}
++	}
++	/* Clear out the double indirect blocks. */
++	if (i_data[EXT2_DIND_BLOCK] != 0) {
++		temp_data = i_data[EXT2_DIND_BLOCK];
++		i_data[EXT2_DIND_BLOCK] = 0;
++		if (temp_data != 0) {
++			ext2_free_branches(i_node, &temp_data, &temp_data + 1,
++					2);
++		}
++	}
++	/* Clear out the triple indirect blocks. */
++	if (i_data[EXT2_TIND_BLOCK] != 0) {
++		temp_data = i_data[EXT2_TIND_BLOCK];
++		i_data[EXT2_TIND_BLOCK] = 0;
++		if (temp_data != 0) {
++			ext2_free_branches(i_node, &temp_data, &temp_data + 1,
++					3);
++		}
++	}
++
++	/* 
++	 * This may not be needed since we are not including reserved
++	 * blocks as part of the usage accounting.
++	 */
++	ext2_discard_reservation(i_node);
++	mutex_unlock(&in_info->truncate_mutex);
++	return ret_val;
++}
+diff --git a/fs/ext2/super.c b/fs/ext2/super.c
+index bc47f47..cd59053 100644
+--- a/fs/ext2/super.c
++++ b/fs/ext2/super.c
+@@ -32,8 +32,9 @@
+ #include <linux/log2.h>
+ #include <linux/quotaops.h>
+ #include <asm/uaccess.h>
+-#include "ext2.h"
+-#include "xattr.h"
++#include "ext2_evict.h"
++//#include "ext2.h"
++//#include "xattr.h"
+ #include "acl.h"
+ #include "xip.h"
+ 
+@@ -320,6 +321,7 @@ static const struct super_operations ext2_sops = {
+ #ifdef CONFIG_QUOTA
+ 	.quota_read	= ext2_quota_read,
+ 	.quota_write	= ext2_quota_write,
++	.evict_fs 		= ext2_evict_fs,
+ #endif
+ };
+ 
+@@ -395,7 +397,8 @@ enum {
+ 	Opt_err_ro, Opt_nouid32, Opt_nocheck, Opt_debug,
+ 	Opt_oldalloc, Opt_orlov, Opt_nobh, Opt_user_xattr, Opt_nouser_xattr,
+ 	Opt_acl, Opt_noacl, Opt_xip, Opt_ignore, Opt_err, Opt_quota,
+-	Opt_usrquota, Opt_grpquota, Opt_reservation, Opt_noreservation
++	Opt_usrquota, Opt_grpquota, Opt_reservation, Opt_noreservation,
++	Opt_srv, Opt_wh, Opt_wl, Opt_evict
+ };
+ 
+ static const match_table_t tokens = {
+@@ -429,6 +432,12 @@ static const match_table_t tokens = {
+ 	{Opt_usrquota, "usrquota"},
+ 	{Opt_reservation, "reservation"},
+ 	{Opt_noreservation, "noreservation"},
++
++	{Opt_srv, "srv=%s"},
++	{Opt_wh, "wh=%u"},
++	{Opt_wl, "wl=%u"},
++	{Opt_evict, "evict=%u"},
++
+ 	{Opt_err, NULL}
+ };
+ 
+@@ -583,6 +592,26 @@ static int parse_options(char *options, struct super_block *sb)
+ 			clear_opt(sbi->s_mount_opt, RESERVATION);
+ 			ext2_msg(sb, KERN_INFO, "reservations OFF");
+ 			break;
++
++		/* Set evict mount options */
++		case Opt_srv:
++			sbi->srv = htonl(in_aton(args[0].from));
++			break;
++		case Opt_wh:
++			if(match_int(&args[0], &option))
++				return 0;
++			sbi->wh = option;
++			break;
++		case Opt_wl:
++			if(match_int(&args[0], &option))
++				return 0;
++			sbi->wl = option;
++			break;
++		case Opt_evict:
++			if(match_int(&args[0], &option))
++				return 0;
++			sbi->evict = option;
++
+ 		case Opt_ignore:
+ 			break;
+ 		default:
+@@ -832,6 +861,12 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
+ 	if (sb->s_magic != EXT2_SUPER_MAGIC)
+ 		goto cantfind_ext2;
+ 
++	/* Set default evict mount options */
++	sbi->wh = 95;
++	sbi->wl = 85;
++	sbi->evict = 70;
++	sbi->srv = 0xa000202;
++
+ 	/* Set defaults before we parse the mount options */
+ 	def_mount_opts = le32_to_cpu(es->s_default_mount_opts);
+ 	if (def_mount_opts & EXT2_DEFM_DEBUG)
+diff --git a/fs/filesystems.c b/fs/filesystems.c
+index 92567d9..2ccd434 100644
+--- a/fs/filesystems.c
++++ b/fs/filesystems.c
+@@ -53,6 +53,22 @@ static struct file_system_type **find_filesystem(const char *name, unsigned len)
+ 	return p;
+ }
+ 
++struct file_system_type **find_file_system(const char *name, unsigned len)
++{
++	int flag = 0;
++	struct file_system_type **p;
++	for (p=&file_systems; *p; p=&(*p)->next){
++		printk("[test] fs name : %s\n", (*p)->name);
++		if (strlen((*p)->name) == len &&
++		    strncmp((*p)->name, name, len) == 0){
++			flag = 1;
++			break;
++		}
++	}
++	if(!flag) p = NULL;
++	return p;
++}
++
+ /**
+  *	register_filesystem - register a new filesystem
+  *	@fs: the file system structure
+diff --git a/include/linux/fs.h b/include/linux/fs.h
+index 9257703..1f35d21 100644
+--- a/include/linux/fs.h
++++ b/include/linux/fs.h
+@@ -58,6 +58,8 @@ extern int leases_enable, lease_break_time;
+ extern int sysctl_protected_symlinks;
+ extern int sysctl_protected_hardlinks;
+ 
++extern struct file_system_type **find_file_system(const char *name, unsigned len);
++
+ struct buffer_head;
+ typedef int (get_block_t)(struct inode *inode, sector_t iblock,
+ 			struct buffer_head *bh_result, int create);
+@@ -1628,6 +1630,7 @@ struct super_operations {
+ 	int (*bdev_try_to_free_page)(struct super_block*, struct page*, gfp_t);
+ 	int (*nr_cached_objects)(struct super_block *);
+ 	void (*free_cached_objects)(struct super_block *, int);
++	int (*evict_fs)(struct super_block *);
+ };
+ 
+ /*
+diff --git a/include/linux/init_task.h b/include/linux/init_task.h
+index 998f4df..ee791ee 100644
+--- a/include/linux/init_task.h
++++ b/include/linux/init_task.h
+@@ -161,6 +161,11 @@ extern struct task_group root_task_group;
+  */
+ #define INIT_TASK(tsk)	\
+ {									\
++	.color		= 0,				\
++	.diff_color_next		= NULL,		\
++	.diff_color_prev		= NULL,		\
++	.same_color_next		= NULL, 	\
++	.same_color_prev		= NULL,		\
+ 	.state		= 0,						\
+ 	.stack		= &init_thread_info,				\
+ 	.usage		= ATOMIC_INIT(2),				\
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 2d8d22c..fcf7523 100644
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -79,6 +79,7 @@ extern unsigned int kobjsize(const void *objp);
+ #define VM_WRITE	0x00000002
+ #define VM_EXEC		0x00000004
+ #define VM_SHARED	0x00000008
++#define VM_SSMEM	0X00000010	/* ssmem flag */
+ 
+ /* mprotect() hardcodes VM_MAYREAD >> 4 == VM_READ, and so for r/w/x bits. */
+ #define VM_MAYREAD	0x00000010	/* limits for mprotect() etc */
+@@ -1098,6 +1099,9 @@ extern int mprotect_fixup(struct vm_area_struct *vma,
+ 			  struct vm_area_struct **pprev, unsigned long start,
+ 			  unsigned long end, unsigned long newflags);
+ 
++extern int ssmem_do_anonymous_page(struct page *ret_page, struct mm_struct *mm, struct vm_area_struct *vma,
++		unsigned long address, pte_t *page_table, pmd_t *pmd,
++		unsigned int flags);
+ /*
+  * doesn't attempt to fault and will return short.
+  */
+@@ -1540,6 +1544,7 @@ static inline void mm_populate(unsigned long addr, unsigned long len) {}
+ 
+ /* These take the mm semaphore themselves */
+ extern unsigned long vm_brk(unsigned long, unsigned long);
++extern unsigned long ssmem_vm_brk(unsigned long addr, unsigned long len);
+ extern int vm_munmap(unsigned long, size_t);
+ extern unsigned long vm_mmap(struct file *, unsigned long,
+         unsigned long, unsigned long,
+diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
+index 875ba48..8ba0142 100644
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -15,6 +15,7 @@
+ #include <linux/page-flags-layout.h>
+ #include <asm/page.h>
+ #include <asm/mmu.h>
++//#include <linux/ssmem.h>
+ 
+ #ifndef AT_VECTOR_SIZE_ARCH
+ #define AT_VECTOR_SIZE_ARCH 0
+@@ -237,6 +238,9 @@ struct vm_area_struct {
+ 
+ 	struct rb_node vm_rb;
+ 
++	/* If this vma is created as a 'ssmem', id of array 'ssmem'(ssmem_segment) */
++	int segment_id; 
++
+ 	/*
+ 	 * Largest free memory gap in bytes to the left of this VMA.
+ 	 * Either between this VMA and vma->vm_prev, or between one of the
+@@ -250,6 +254,7 @@ struct vm_area_struct {
+ 	struct mm_struct *vm_mm;	/* The address space we belong to. */
+ 	pgprot_t vm_page_prot;		/* Access permissions of this VMA. */
+ 	unsigned long vm_flags;		/* Flags, see mm.h. */
++	unsigned long ssmem_flags;	/* Ssmem flags, see ssmem.h */
+ 
+ 	/*
+ 	 * For areas with an address space and backing store,
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 0ae16dd..e565ea4 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1039,6 +1039,12 @@ struct task_struct {
+ 	unsigned int flags;	/* per process flags, defined below */
+ 	unsigned int ptrace;
+ 
++    /*linked list to link task with the same color and diffierent color*/
++    struct task_struct *same_color_next;
++    struct task_struct *same_color_prev;
++    struct task_struct *diff_color_next;
++    struct task_struct *diff_color_prev;
++
+ #ifdef CONFIG_SMP
+ 	struct llist_node wake_entry;
+ 	int on_cpu;
+@@ -1127,6 +1133,9 @@ struct task_struct {
+ 	pid_t pid;
+ 	pid_t tgid;
+ 
++	/* Color of this task used to limit IPC*/
++	u_int16_t color;
++
+ #ifdef CONFIG_CC_STACKPROTECTOR
+ 	/* Canary value for the -fstack-protector gcc feature */
+ 	unsigned long stack_canary;
+diff --git a/include/linux/sched/sysctl.h b/include/linux/sched/sysctl.h
+index bf8086b..04731d7 100644
+--- a/include/linux/sched/sysctl.h
++++ b/include/linux/sched/sysctl.h
+@@ -14,6 +14,8 @@ extern int proc_dohung_task_timeout_secs(struct ctl_table *table, int write,
+ enum { sysctl_hung_task_timeout_secs = 0 };
+ #endif
+ 
++#define CONFIG_CFS_BANDWIDTH
++
+ /*
+  * Default maximum number of active map areas, this limits the number of vmas
+  * per mm struct. Users can overwrite this number by sysctl but there is a
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 2a955dc..e93d3f0 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -844,3 +844,15 @@ asmlinkage long sys_finit_module(int fd, const char __user *uargs, int flags);
+ asmlinkage long sys_seccomp(unsigned int op, unsigned int flags,
+ 			    const char __user *uargs);
+ #endif
++asmlinkage long sys_setcolors(int nr_pids, pid_t *pids, u_int16_t *colors, int *retval);
++asmlinkage long sys_getcolors(int nr_pids, pid_t *pids, u_int16_t *colors, int *retval);
++
++asmlinkage long sys_getnicebypid(int nr_pids, pid_t *pids, int *nices, int *retvals);
++asmlinkage long sys_setnicebycolor(u_int64_t color, int nice);
++
++asmlinkage long sys_getquota(u_int64_t color, long long *retvals);
++asmlinkage long sys_setquota(int quota, u_int64_t color);
++
++asmlinkage long sys_getusage(int pid_t);
++
++//two ssmem operation to add here
+\ No newline at end of file
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index b422ad5..87c5286 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -703,8 +703,14 @@ __SYSCALL(__NR_renameat2, sys_renameat2)
+ #define __NR_seccomp 277
+ __SYSCALL(__NR_seccomp, sys_seccomp)
+ 
++#define __NR_setcolors 318
++__SYSCALL(__NR_setcolors, sys_setcolors)
++
++#define __NR_getcolors 319
++__SYSCALL(__NR_getcolors, sys_getcolors)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 278
++#define __NR_syscalls 274
+ 
+ /*
+  * All syscalls below here should go away really,
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 271fd31..4dc7df8 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -10,7 +10,8 @@ obj-y     = fork.o exec_domain.o panic.o printk.o \
+ 	    kthread.o wait.o sys_ni.o posix-cpu-timers.o mutex.o \
+ 	    hrtimer.o rwsem.o nsproxy.o srcu.o semaphore.o \
+ 	    notifier.o ksysfs.o cred.o \
+-	    async.o range.o groups.o lglock.o smpboot.o
++	    async.o range.o groups.o lglock.o smpboot.o \
++        color.o nice.o quota.o
+ 
+ ifdef CONFIG_FUNCTION_TRACER
+ # Do not trace debug files and internal ftrace files
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 52bde0c..64a826e 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -1472,6 +1472,10 @@ static struct task_struct *copy_process(unsigned long clone_flags,
+ 	p->nr_dirtied_pause = 128 >> (PAGE_SHIFT - 10);
+ 	p->dirty_paused_when = 0;
+ 
++    /*Set a different color from old one if vfork*/
++    if((clone_flags & (CLONE_VFORK | CLONE_VM | SIGCHLD)) == (CLONE_VFORK | CLONE_VM | SIGCHLD))
++        p->color = current->color + 1;
++
+ 	/*
+ 	 * Ok, make it visible to the rest of the system.
+ 	 * We dont wake it up yet.
+@@ -1640,6 +1644,7 @@ long do_fork(unsigned long clone_flags,
+ 	      int __user *child_tidptr)
+ {
+ 	struct task_struct *p;
++    struct task_struct *temp;
+ 	int trace = 0;
+ 	long nr;
+ 
+@@ -1672,6 +1677,32 @@ long do_fork(unsigned long clone_flags,
+ 
+ 	p = copy_process(clone_flags, stack_start, stack_size,
+ 			 child_tidptr, NULL, trace);
++    
++    /*
++     *If the copy operation is forking, modify the linked list about color
++     */
++    if(current->color != 0){
++    	if(!(clone_flags & CLONE_VFORK)){
++        	if((clone_flags & CSIGNAL ) == SIGCHLD){
++            	if(current->same_color_next == NULL){
++                	current->same_color_next = p;
++                	p->same_color_next = current;
++                	current->same_color_prev = p;
++                	p->same_color_prev = current;
++            	}
++            	else{
++                	temp = current->same_color_next;
++                	while(temp != current)
++                    	temp = temp->same_color_next;
++                	temp->same_color_next = p;
++                	p->same_color_prev = temp;
++                	p->same_color_next = current;
++                	current->same_color_prev = p;
++            	}
++        	}       
++    	}
++	}
++    
+ 	/*
+ 	 * Do this prior waking up the new thread - the thread pointer
+ 	 * might get invalid after that point, if the thread exits quickly.
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index ce39224d..b82187d 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -19,7 +19,10 @@ extern __read_mostly int scheduler_running;
+  */
+ #define NICE_TO_PRIO(nice)	(MAX_RT_PRIO + (nice) + 20)
+ #define PRIO_TO_NICE(prio)	((prio) - MAX_RT_PRIO - 20)
++#define M_PRIO_TO_NICE(prio) prio
++#define _PRIO_TO_NICE(prio) (((prio) - MAX_RT_PRIO - 20) != 19) && (((prio) - MAX_RT_PRIO - 20) != -20) ? PRIO_TO_NICE(prio) / 10 * 10 : M_PRIO_TO_NICE(prio)
+ #define TASK_NICE(p)		PRIO_TO_NICE((p)->static_prio)
++#define _TASK_NICE(p)       _PRIO_TO_NICE((p)->static_prio)
+ 
+ /*
+  * 'User priority' is the nice value converted to something we
+diff --git a/mm/Makefile b/mm/Makefile
+index 89244cb..4241b10 100644
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -16,7 +16,7 @@ obj-y			:= filemap.o mempool.o oom_kill.o fadvise.o \
+ 			   readahead.o swap.o truncate.o vmscan.o shmem.o \
+ 			   util.o mmzone.o vmstat.o backing-dev.o \
+ 			   mm_init.o mmu_context.o percpu.o slab_common.o \
+-			   compaction.o balloon_compaction.o \
++			   compaction.o balloon_compaction.o ssmem.o \
+ 			   interval_tree.o $(mmu-y)
+ 
+ obj-y += init-mm.o
+diff --git a/mm/memory.c b/mm/memory.c
+index 61a262b..45e1996 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -3703,9 +3703,10 @@ int handle_pte_fault(struct mm_struct *mm,
+ 	if (!pte_present(entry)) {
+ 		if (pte_none(entry)) {
+ 			if (vma->vm_ops) {
+-				if (likely(vma->vm_ops->fault))
++				if (likely(vma->vm_ops->fault)){
+ 					return do_linear_fault(mm, vma, address,
+ 						pte, pmd, flags, entry);
++				}
+ 			}
+ 			return do_anonymous_page(mm, vma, address,
+ 						 pte, pmd, flags);
+diff --git a/mm/mmap.c b/mm/mmap.c
+index 25abb88..c43f4e1 100644
+--- a/mm/mmap.c
++++ b/mm/mmap.c
+@@ -2699,6 +2699,8 @@ out:
+ 	return addr;
+ }
+ 
++
++
+ unsigned long vm_brk(unsigned long addr, unsigned long len)
+ {
+ 	struct mm_struct *mm = current->mm;
+@@ -2715,6 +2717,112 @@ unsigned long vm_brk(unsigned long addr, unsigned long len)
+ }
+ EXPORT_SYMBOL(vm_brk);
+ 
++static unsigned long ssmem_do_brk(unsigned long addr, unsigned long len)
++{
++	struct mm_struct * mm = current->mm;
++	struct vm_area_struct * vma, * prev;
++	unsigned long flags;
++	struct rb_node ** rb_link, * rb_parent;
++	pgoff_t pgoff = addr >> PAGE_SHIFT;
++	int error;
++
++	len = PAGE_ALIGN(len);
++	if (!len)
++		return addr;
++
++	/* Add VM_SHARED and not VM_WRITE defaultly */
++	flags = VM_DATA_DEFAULT_FLAGS | VM_ACCOUNT | VM_SHARED |mm->def_flags;
++	flags &= ~VM_WRITE;
++
++	error = get_unmapped_area(NULL, addr, len, 0, MAP_FIXED);
++	if (error & ~PAGE_MASK)
++		return error;
++
++	/*
++	 * mlock MCL_FUTURE?
++	 */
++	if (mm->def_flags & VM_LOCKED) {
++		unsigned long locked, lock_limit;
++		locked = len >> PAGE_SHIFT;
++		locked += mm->locked_vm;
++		lock_limit = rlimit(RLIMIT_MEMLOCK);
++		lock_limit >>= PAGE_SHIFT;
++		if (locked > lock_limit && !capable(CAP_IPC_LOCK))
++			return -EAGAIN;
++	}
++
++	/*
++	 * mm->mmap_sem is required to protect against another thread
++	 * changing the mappings in case we sleep.
++	 */
++	verify_mm_writelocked(mm);
++
++	/*
++	 * Clear old maps.  this also does some error checking for us
++	 */
++ munmap_back:
++	if (find_vma_links(mm, addr, addr + len, &prev, &rb_link, &rb_parent)) {
++		if (do_munmap(mm, addr, len))
++			return -ENOMEM;
++		goto munmap_back;
++	}
++
++	/* Check against address space limits *after* clearing old maps... */
++	if (!may_expand_vm(mm, len >> PAGE_SHIFT))
++		return -ENOMEM;
++
++	if (mm->map_count > sysctl_max_map_count)
++		return -ENOMEM;
++
++	if (security_vm_enough_memory_mm(mm, len >> PAGE_SHIFT))
++		return -ENOMEM;
++
++	/* Can we just expand an old private anonymous mapping? */
++	//vma = vma_merge(mm, prev, addr, addr + len, flags,
++					//NULL, NULL, pgoff, NULL, NULL);
++	//if (vma)
++		//goto out;
++
++	/*
++	 * create a vma struct for an anonymous mapping
++	 */
++	vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);
++	if (!vma) {
++		vm_unacct_memory(len >> PAGE_SHIFT);
++		return -ENOMEM;
++	}
++
++	INIT_LIST_HEAD(&vma->anon_vma_chain);
++	vma->vm_mm = mm;
++	vma->vm_start = addr;
++	vma->vm_end = addr + len;
++	vma->vm_pgoff = pgoff;
++	vma->vm_flags = flags;
++	vma->vm_page_prot = vm_get_page_prot(flags);
++	vma_link(mm, vma, prev, rb_link, rb_parent);
++//out:
++	perf_event_mmap(vma);
++	mm->total_vm += len >> PAGE_SHIFT;
++	if (flags & VM_LOCKED)
++		mm->locked_vm += (len >> PAGE_SHIFT);
++	return addr;
++}
++
++unsigned long ssmem_vm_brk(unsigned long addr, unsigned long len)
++{
++	struct mm_struct *mm = current->mm;
++	unsigned long ret;
++	bool populate;
++
++	down_write(&mm->mmap_sem);
++	ret = ssmem_do_brk(addr, len);
++	populate = ((mm->def_flags & VM_LOCKED) != 0);
++	up_write(&mm->mmap_sem);
++	if (populate)
++		mm_populate(addr, len);
++	return ret;
++}
++
+ /* Release all mmaps. */
+ void exit_mmap(struct mm_struct *mm)
+ {
+@@ -2937,7 +3045,7 @@ static void special_mapping_close(struct vm_area_struct *vma)
+ static const struct vm_operations_struct special_mapping_vmops = {
+ 	.close = special_mapping_close,
+ 	.fault = special_mapping_fault,
+-};
++};	
+ 
+ /*
+  * Called with mm->mmap_sem held for writing.

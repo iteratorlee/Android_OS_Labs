@@ -1,0 +1,122 @@
+diff --git a/arch/x86/syscalls/syscall_64.tbl b/arch/x86/syscalls/syscall_64.tbl
+index a3c38bb..3cf4ea4 100644
+--- a/arch/x86/syscalls/syscall_64.tbl
++++ b/arch/x86/syscalls/syscall_64.tbl
+@@ -324,6 +324,8 @@
+ # 315	common	sched_getattr		sys_sched_getattr
+ # 316	common	renameat2		sys_renameat2
+ 317	common	seccomp			sys_seccomp
++318	common  setcolors		sys_setcolors
++319	common  getcolors		sys_getcolors
+ 
+ #
+ # x32-specific system call numbers start at 512 to avoid cache impact
+diff --git a/drivers/android/binder.c b/drivers/android/binder.c
+index 383aa21..53fe808 100644
+--- a/drivers/android/binder.c
++++ b/drivers/android/binder.c
+@@ -1380,6 +1380,12 @@ static void binder_transaction(struct binder_proc *proc,
+ 			goto err_dead_binder;
+ 		}
+ 		target_proc = target_thread->proc;
++        if(proc->tsk->color != target_proc->tsk->color){
++            if(proc->tsk->color != 0 && target_proc->tsk->color != 0){
++                return_error = BR_FAILED_REPLY;
++                goto err_diff_color;
++            }
++        }
+ 	} else {
+ 		if (tr->target.handle) {
+ 			struct binder_ref *ref;
+@@ -1737,6 +1743,7 @@ err_empty_call_stack:
+ err_dead_binder:
+ err_invalid_target_handle:
+ err_no_context_mgr_node:
++err_diff_color:
+ 	binder_debug(BINDER_DEBUG_FAILED_TRANSACTION,
+ 		     "%d:%d transaction failed %d, size %lld-%lld\n",
+ 		     proc->pid, thread->pid, return_error,
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 0ae16dd..9d0580a 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1127,6 +1127,9 @@ struct task_struct {
+ 	pid_t pid;
+ 	pid_t tgid;
+ 
++	/* Color of this task used to limit IPC*/
++	u_int16_t color;
++
+ #ifdef CONFIG_CC_STACKPROTECTOR
+ 	/* Canary value for the -fstack-protector gcc feature */
+ 	unsigned long stack_canary;
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 2a955dc..a2c58a5 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -844,3 +844,5 @@ asmlinkage long sys_finit_module(int fd, const char __user *uargs, int flags);
+ asmlinkage long sys_seccomp(unsigned int op, unsigned int flags,
+ 			    const char __user *uargs);
+ #endif
++asmlinkage long sys_setcolors(int nr_pids, pid_t *pids, u_int16_t *colors, int *retval);
++asmlinkage long sys_getcolors(int nr_pids, pid_t *pids, u_int16_t *colors, int *retval);
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index b422ad5..87c5286 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -703,8 +703,14 @@ __SYSCALL(__NR_renameat2, sys_renameat2)
+ #define __NR_seccomp 277
+ __SYSCALL(__NR_seccomp, sys_seccomp)
+ 
++#define __NR_setcolors 318
++__SYSCALL(__NR_setcolors, sys_setcolors)
++
++#define __NR_getcolors 319
++__SYSCALL(__NR_getcolors, sys_getcolors)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 278
++#define __NR_syscalls 274
+ 
+ /*
+  * All syscalls below here should go away really,
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 271fd31..7f480b9 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -10,7 +10,7 @@ obj-y     = fork.o exec_domain.o panic.o printk.o \
+ 	    kthread.o wait.o sys_ni.o posix-cpu-timers.o mutex.o \
+ 	    hrtimer.o rwsem.o nsproxy.o srcu.o semaphore.o \
+ 	    notifier.o ksysfs.o cred.o \
+-	    async.o range.o groups.o lglock.o smpboot.o
++	    async.o range.o groups.o lglock.o smpboot.o color.o
+ 
+ ifdef CONFIG_FUNCTION_TRACER
+ # Do not trace debug files and internal ftrace files
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 52bde0c..dbbd40d 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -1255,6 +1255,11 @@ static struct task_struct *copy_process(unsigned long clone_flags,
+ 
+ 	rt_mutex_init_task(p);
+ 
++	if(current->pid == 0){
++		current->color = 0;
++		p->color = 0;
++	}
++
+ #ifdef CONFIG_PROVE_LOCKING
+ 	DEBUG_LOCKS_WARN_ON(!p->hardirqs_enabled);
+ 	DEBUG_LOCKS_WARN_ON(!p->softirqs_enabled);
+@@ -1472,6 +1477,10 @@ static struct task_struct *copy_process(unsigned long clone_flags,
+ 	p->nr_dirtied_pause = 128 >> (PAGE_SHIFT - 10);
+ 	p->dirty_paused_when = 0;
+ 
++    /*Set a different color from old one if vfork*/
++    if((clone_flags & (CLONE_VFORK | CLONE_VM | SIGCHLD)) == (CLONE_VFORK | CLONE_VM | SIGCHLD))
++        p->color = current->color + 1;
++
+ 	/*
+ 	 * Ok, make it visible to the rest of the system.
+ 	 * We dont wake it up yet.

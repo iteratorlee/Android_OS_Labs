@@ -1,0 +1,144 @@
+______ one
+______ two
+______ three
+______ four
+______ five
+______ six
+______ seven
+______ eight
+______ sleeping...
+______ initial dir listing
+______ /mnt/sdcard
+total 6
+      2      2 drwxr-xr-x    4 0        0             1024 Wed Jan 11 08:10:09 2017 .
+     11      2 drwxrwxrwx    2 0        0             1024 Wed Jan 11 08:08:58 2017 d1
+     12      2 drwxrwxrwx    2 0        0             1024 Wed Jan 11 08:08:58 2017 d2
+   3187      0 drwxr-xr-x   10 0        1000           200 Wed Jan 11 08:08:06 2017 ..
+______ /mnt/sdcard/d1
+total 1589
+     11      2 drwxrwxrwx    2 0        0             1024 Wed Jan 11 08:10:09 2017 .
+      2      2 drwxr-xr-x    4 0        0             1024 Wed Jan 11 08:10:09 2017 ..
+     17    516 -rw-rw-rw-    1 0        0           524288 Wed Jan 11 08:08:59 2017 five
+     13      5 -rw-rw-rw-    1 0        0             4096 Wed Jan 11 08:08:59 2017 one
+     19   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:08:59 2017 seven
+     15     34 -rw-rw-rw-    1 0        0            32768 Wed Jan 11 08:08:59 2017 three
+______ /mnt/sdcard/d2
+total 5287
+     12      2 drwxrwxrwx    2 0        0             1024 Wed Jan 11 08:10:09 2017 .
+      2      2 drwxr-xr-x    4 0        0             1024 Wed Jan 11 08:10:09 2017 ..
+     20   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:08:59 2017 eight
+     16    130 -rw-rw-rw-    1 0        0           131056 Wed Jan 11 08:08:59 2017 four
+     18   4114 -rw-rw-rw-    1 0        0          4194304 Wed Jan 11 08:08:59 2017 six
+     14      9 -rw-rw-rw-    1 0        0             8176 Wed Jan 11 08:08:59 2017 two
+______ nine
+______ ten
+______ sleeping...
+______ access seven
+seven  
+seven  
+seven  
+seven  
+seven  
+seven  
+seven  
+seven  
+______ d1 listing after eviction and access
+total 2067
+     11      2 drwxrwxrwx    2 0        0             1024 Wed Jan 11 08:11:19 2017 .
+     19   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:11:19 2017 seven
+      2      2 drwxr-xr-x    4 0        0             1024 Wed Jan 11 08:10:09 2017 ..
+     21   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:10:09 2017 nine
+     17      1 -rw-rw-rw-    1 0        0           524288 Wed Jan 11 08:08:59 2017 five
+     13      1 -rw-rw-rw-    1 0        0             4096 Wed Jan 11 08:08:59 2017 one
+     15      1 -rw-rw-rw-    1 0        0            32768 Wed Jan 11 08:08:59 2017 three
+______ eleven
+______ access eight
+eight  
+eight  
+eight  
+eight  
+eight  
+eight  
+eight  
+eight  
+______ twelve
+0+1 records in
+0+1 records out
+8 bytes transferred in 0.001 secs (8000 bytes/sec)
+______ thirteen
+______ fourteen
+______ fifteen
+______ access five
+______ access seven
+seven  
+seven  
+seven  
+seven  
+seven  
+seven  
+seven  
+seven  
+______ sixteen
+______ seventeen
+______ eighteen
+______ nineteen
+______ twenty
+______ access six
+______ sleeping...
+______ access nineteen
+ninetee
+ninetee
+ninetee
+ninetee
+ninetee
+ninetee
+ninetee
+ninetee
+______ access eight
+______ access fourteen
+fourtee
+fourtee
+fourtee
+fourtee
+fourtee
+fourtee
+fourtee
+fourtee
+______ sleeping...
+______ access twelve
+______ final directory listing
+______ /mnt/sdcard
+total 6
+      2      2 drwxr-xr-x    4 0        0             1024 Wed Jan 11 08:12:46 2017 .
+     11      2 drwxrwxrwx    2 0        0             1024 Wed Jan 11 08:11:19 2017 d1
+     12      2 drwxrwxrwx    2 0        0             1024 Wed Jan 11 08:10:09 2017 d2
+   3187      0 drwxr-xr-x   10 0        1000           200 Wed Jan 11 08:08:06 2017 ..
+______ /mnt/sdcard/d1
+total 3101
+     11      2 drwxrwxrwx    2 0        0             1024 Wed Jan 11 08:12:47 2017 .
+      2      2 drwxr-xr-x    4 0        0             1024 Wed Jan 11 08:12:46 2017 ..
+     31   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:12:23 2017 nineteen
+     27   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:11:45 2017 fifteen
+     17      1 -rw-rw-rw-    1 0        0           524288 Wed Jan 11 08:11:45 2017 five
+     29   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:11:45 2017 seventeen
+     25      1 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:11:35 2017 thirteen
+     23      1 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:11:25 2017 eleven
+     19      1 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:11:19 2017 seven
+     21      1 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:10:09 2017 nine
+     13      1 -rw-rw-rw-    1 0        0             4096 Wed Jan 11 08:08:59 2017 one
+     15      1 -rw-rw-rw-    1 0        0            32768 Wed Jan 11 08:08:59 2017 three
+______ /mnt/sdcard/d2
+total 4130
+     12      2 drwxrwxrwx    2 0        0             1024 Wed Jan 11 08:12:47 2017 .
+      2      2 drwxr-xr-x    4 0        0             1024 Wed Jan 11 08:12:46 2017 ..
+     24      1 -rw-rw-rw-    1 0        0          1047560 Wed Jan 11 08:12:43 2017 twelve
+     20      1 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:12:23 2017 eight
+     26   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:12:23 2017 fourteen
+     18      1 -rw-rw-rw-    1 0        0          4194304 Wed Jan 11 08:11:54 2017 six
+     30   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:11:50 2017 eighteen
+     32   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:11:50 2017 twenty
+     28   1030 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:11:45 2017 sixteen
+     22      1 -rw-rw-rw-    1 0        0          1048576 Wed Jan 11 08:10:09 2017 ten
+     16      1 -rw-rw-rw-    1 0        0           131056 Wed Jan 11 08:08:59 2017 four
+     14      1 -rw-rw-rw-    1 0        0             8176 Wed Jan 11 08:08:59 2017 two
+

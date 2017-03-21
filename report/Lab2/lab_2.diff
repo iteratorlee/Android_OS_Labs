@@ -1,0 +1,236 @@
+diff --git a/arch/um/defconfig b/arch/um/defconfig
+index 08107a7..24b6dfd 100644
+--- a/arch/um/defconfig
++++ b/arch/um/defconfig
+@@ -161,7 +161,7 @@ CONFIG_CGROUP_MEMCG_SWAP=y
+ # CONFIG_CGROUP_MEMCG_KMEM is not set
+ CONFIG_CGROUP_SCHED=y
+ CONFIG_FAIR_GROUP_SCHED=y
+-# CONFIG_CFS_BANDWIDTH is not set
++CONFIG_CFS_BANDWIDTH=y
+ # CONFIG_RT_GROUP_SCHED is not set
+ CONFIG_BLK_CGROUP=y
+ # CONFIG_DEBUG_BLK_CGROUP is not set
+diff --git a/arch/x86/syscalls/syscall_64.tbl b/arch/x86/syscalls/syscall_64.tbl
+index a3c38bb..c634635 100644
+--- a/arch/x86/syscalls/syscall_64.tbl
++++ b/arch/x86/syscalls/syscall_64.tbl
+@@ -324,6 +324,13 @@
+ # 315	common	sched_getattr		sys_sched_getattr
+ # 316	common	renameat2		sys_renameat2
+ 317	common	seccomp			sys_seccomp
++318	common  setcolors		sys_setcolors
++319	common  getcolors		sys_getcolors
++320 common  getnicebypid    sys_getnicebypid
++321 common  setnicebycolor  sys_setnicebycolor
++322 common  getquota		sys_getquota
++323 common  setquota  		sys_setquota
++324 common  getusge 		sys_getusage
+ 
+ #
+ # x32-specific system call numbers start at 512 to avoid cache impact
+diff --git a/drivers/android/binder.c b/drivers/android/binder.c
+index 383aa21..53fe808 100644
+--- a/drivers/android/binder.c
++++ b/drivers/android/binder.c
+@@ -1380,6 +1380,12 @@ static void binder_transaction(struct binder_proc *proc,
+ 			goto err_dead_binder;
+ 		}
+ 		target_proc = target_thread->proc;
++        if(proc->tsk->color != target_proc->tsk->color){
++            if(proc->tsk->color != 0 && target_proc->tsk->color != 0){
++                return_error = BR_FAILED_REPLY;
++                goto err_diff_color;
++            }
++        }
+ 	} else {
+ 		if (tr->target.handle) {
+ 			struct binder_ref *ref;
+@@ -1737,6 +1743,7 @@ err_empty_call_stack:
+ err_dead_binder:
+ err_invalid_target_handle:
+ err_no_context_mgr_node:
++err_diff_color:
+ 	binder_debug(BINDER_DEBUG_FAILED_TRANSACTION,
+ 		     "%d:%d transaction failed %d, size %lld-%lld\n",
+ 		     proc->pid, thread->pid, return_error,
+diff --git a/include/linux/init_task.h b/include/linux/init_task.h
+index 998f4df..ee791ee 100644
+--- a/include/linux/init_task.h
++++ b/include/linux/init_task.h
+@@ -161,6 +161,11 @@ extern struct task_group root_task_group;
+  */
+ #define INIT_TASK(tsk)	\
+ {									\
++	.color		= 0,				\
++	.diff_color_next		= NULL,		\
++	.diff_color_prev		= NULL,		\
++	.same_color_next		= NULL, 	\
++	.same_color_prev		= NULL,		\
+ 	.state		= 0,						\
+ 	.stack		= &init_thread_info,				\
+ 	.usage		= ATOMIC_INIT(2),				\
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 0ae16dd..e565ea4 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1039,6 +1039,12 @@ struct task_struct {
+ 	unsigned int flags;	/* per process flags, defined below */
+ 	unsigned int ptrace;
+ 
++    /*linked list to link task with the same color and diffierent color*/
++    struct task_struct *same_color_next;
++    struct task_struct *same_color_prev;
++    struct task_struct *diff_color_next;
++    struct task_struct *diff_color_prev;
++
+ #ifdef CONFIG_SMP
+ 	struct llist_node wake_entry;
+ 	int on_cpu;
+@@ -1127,6 +1133,9 @@ struct task_struct {
+ 	pid_t pid;
+ 	pid_t tgid;
+ 
++	/* Color of this task used to limit IPC*/
++	u_int16_t color;
++
+ #ifdef CONFIG_CC_STACKPROTECTOR
+ 	/* Canary value for the -fstack-protector gcc feature */
+ 	unsigned long stack_canary;
+diff --git a/include/linux/sched/sysctl.h b/include/linux/sched/sysctl.h
+index bf8086b..04731d7 100644
+--- a/include/linux/sched/sysctl.h
++++ b/include/linux/sched/sysctl.h
+@@ -14,6 +14,8 @@ extern int proc_dohung_task_timeout_secs(struct ctl_table *table, int write,
+ enum { sysctl_hung_task_timeout_secs = 0 };
+ #endif
+ 
++#define CONFIG_CFS_BANDWIDTH
++
+ /*
+  * Default maximum number of active map areas, this limits the number of vmas
+  * per mm struct. Users can overwrite this number by sysctl but there is a
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 2a955dc..fa77545 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -844,3 +844,13 @@ asmlinkage long sys_finit_module(int fd, const char __user *uargs, int flags);
+ asmlinkage long sys_seccomp(unsigned int op, unsigned int flags,
+ 			    const char __user *uargs);
+ #endif
++asmlinkage long sys_setcolors(int nr_pids, pid_t *pids, u_int16_t *colors, int *retval);
++asmlinkage long sys_getcolors(int nr_pids, pid_t *pids, u_int16_t *colors, int *retval);
++
++asmlinkage long sys_getnicebypid(int nr_pids, pid_t *pids, int *nices, int *retvals);
++asmlinkage long sys_setnicebycolor(u_int64_t color, int nice);
++
++asmlinkage long sys_getquota(u_int64_t color, long long *retvals);
++asmlinkage long sys_setquota(int quota, u_int64_t color);
++
++asmlinkage long sys_getusage(int pid_t);
+\ No newline at end of file
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index b422ad5..87c5286 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -703,8 +703,14 @@ __SYSCALL(__NR_renameat2, sys_renameat2)
+ #define __NR_seccomp 277
+ __SYSCALL(__NR_seccomp, sys_seccomp)
+ 
++#define __NR_setcolors 318
++__SYSCALL(__NR_setcolors, sys_setcolors)
++
++#define __NR_getcolors 319
++__SYSCALL(__NR_getcolors, sys_getcolors)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 278
++#define __NR_syscalls 274
+ 
+ /*
+  * All syscalls below here should go away really,
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 271fd31..4dc7df8 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -10,7 +10,8 @@ obj-y     = fork.o exec_domain.o panic.o printk.o \
+ 	    kthread.o wait.o sys_ni.o posix-cpu-timers.o mutex.o \
+ 	    hrtimer.o rwsem.o nsproxy.o srcu.o semaphore.o \
+ 	    notifier.o ksysfs.o cred.o \
+-	    async.o range.o groups.o lglock.o smpboot.o
++	    async.o range.o groups.o lglock.o smpboot.o \
++        color.o nice.o quota.o
+ 
+ ifdef CONFIG_FUNCTION_TRACER
+ # Do not trace debug files and internal ftrace files
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 52bde0c..64a826e 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -1472,6 +1472,10 @@ static struct task_struct *copy_process(unsigned long clone_flags,
+ 	p->nr_dirtied_pause = 128 >> (PAGE_SHIFT - 10);
+ 	p->dirty_paused_when = 0;
+ 
++    /*Set a different color from old one if vfork*/
++    if((clone_flags & (CLONE_VFORK | CLONE_VM | SIGCHLD)) == (CLONE_VFORK | CLONE_VM | SIGCHLD))
++        p->color = current->color + 1;
++
+ 	/*
+ 	 * Ok, make it visible to the rest of the system.
+ 	 * We dont wake it up yet.
+@@ -1640,6 +1644,7 @@ long do_fork(unsigned long clone_flags,
+ 	      int __user *child_tidptr)
+ {
+ 	struct task_struct *p;
++    struct task_struct *temp;
+ 	int trace = 0;
+ 	long nr;
+ 
+@@ -1672,6 +1677,32 @@ long do_fork(unsigned long clone_flags,
+ 
+ 	p = copy_process(clone_flags, stack_start, stack_size,
+ 			 child_tidptr, NULL, trace);
++    
++    /*
++     *If the copy operation is forking, modify the linked list about color
++     */
++    if(current->color != 0){
++    	if(!(clone_flags & CLONE_VFORK)){
++        	if((clone_flags & CSIGNAL ) == SIGCHLD){
++            	if(current->same_color_next == NULL){
++                	current->same_color_next = p;
++                	p->same_color_next = current;
++                	current->same_color_prev = p;
++                	p->same_color_prev = current;
++            	}
++            	else{
++                	temp = current->same_color_next;
++                	while(temp != current)
++                    	temp = temp->same_color_next;
++                	temp->same_color_next = p;
++                	p->same_color_prev = temp;
++                	p->same_color_next = current;
++                	current->same_color_prev = p;
++            	}
++        	}       
++    	}
++	}
++    
+ 	/*
+ 	 * Do this prior waking up the new thread - the thread pointer
+ 	 * might get invalid after that point, if the thread exits quickly.
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index ce39224d..b82187d 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -19,7 +19,10 @@ extern __read_mostly int scheduler_running;
+  */
+ #define NICE_TO_PRIO(nice)	(MAX_RT_PRIO + (nice) + 20)
+ #define PRIO_TO_NICE(prio)	((prio) - MAX_RT_PRIO - 20)
++#define M_PRIO_TO_NICE(prio) prio
++#define _PRIO_TO_NICE(prio) (((prio) - MAX_RT_PRIO - 20) != 19) && (((prio) - MAX_RT_PRIO - 20) != -20) ? PRIO_TO_NICE(prio) / 10 * 10 : M_PRIO_TO_NICE(prio)
+ #define TASK_NICE(p)		PRIO_TO_NICE((p)->static_prio)
++#define _TASK_NICE(p)       _PRIO_TO_NICE((p)->static_prio)
+ 
+ /*
+  * 'User priority' is the nice value converted to something we
